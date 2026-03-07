@@ -599,18 +599,32 @@ Staff can edit and save the bio. Edited bios are marked as `staff_edited: true`.
 
 ---
 
-## Caching Strategy
+## Caching & Preservation Strategy
+
+### Bio Preservation Rules
+
+**AI will NEVER overwrite a bio automatically.** Regeneration only happens when explicitly requested by user.
+
+| Scenario | What User Sees | Regenerate Option |
+|----------|----------------|-------------------|
+| No bio exists | "Generate AI Bio" button | Yes (first generation) |
+| Bio exists, data unchanged | Cached bio with "AI Generated" badge | No |
+| Bio exists, new data available | Cached bio + "New activity - Refresh?" | Yes, on click |
+| Staff-edited bio | Cached bio with "Edited by X" badge | No (AI disabled) |
+| Staff-edited bio, user wants AI | Must click "Reset to AI" with confirmation | Yes, after confirm |
+
+### Staleness Tracking
 
 | Event | Action |
 |-------|--------|
-| Bio generated | Cache with 7-day TTL |
-| New order placed | Mark bio as "outdated" |
-| Wishlist updated | Mark bio as "outdated" |
-| Staff note added | Mark bio as "outdated" |
-| Preferences updated | Mark bio as "outdated" |
-| Staff edits bio | Cache indefinitely (staff-owned) |
+| Bio generated | Cache with `generated_at` timestamp |
+| New order placed | Mark bio as `is_stale: true` |
+| Wishlist updated | Mark bio as `is_stale: true` |
+| Staff note added | Mark bio as `is_stale: true` |
+| Preferences updated | Mark bio as `is_stale: true` |
+| Staff edits bio | Set `is_staff_edited: true`, AI disabled |
 
-Outdated bios show a prompt to regenerate but remain visible.
+Stale bios remain visible with a non-intrusive prompt to refresh. The prompt shows what changed (e.g., "2 new orders since last update").
 
 ---
 
