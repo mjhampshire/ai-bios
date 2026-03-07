@@ -352,14 +352,144 @@ Outdated bios show a prompt to regenerate but remain visible.
 
 ---
 
-## Questions to Resolve
+## Performance & Generation Strategy
 
-1. **LLM Provider** - Claude (Anthropic) vs GPT (OpenAI) vs self-hosted?
-2. **Bio ownership** - Once staff edits, should AI regeneration be disabled?
-3. **Multiple bios** - One bio per customer, or per store/staff member?
-4. **Real-time vs batch** - Generate on-demand or pre-generate overnight?
-5. **Staff notes privacy** - Which notes should be included in AI generation?
-6. **Tone customization** - Should retailers be able to customize bio tone/style?
+### Latency Considerations
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| Claude API call | 2-5 seconds | Depends on bio length, model load |
+| Data aggregation (ClickHouse) | 200-500ms | Parallel queries |
+| Cached bio retrieval | <100ms | DynamoDB read |
+
+### Hybrid Approach (Recommended)
+
+To avoid unexpected delays, use explicit user-triggered generation:
+
+**Scenario A: No bio exists**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  No AI bio generated yet                                    │
+│                                                             │
+│  [✨ Generate AI Bio]                                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Scenario B: Cached bio (fresh)**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Sarah gravitates toward classic, minimalist pieces...     │
+│  ...                                                        │
+│                                          🤖 AI Generated   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Scenario C: Cached bio (stale - new data available)**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Sarah gravitates toward classic, minimalist pieces...     │
+│  ...                                                        │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ ℹ️ New activity since Mar 1   [🔄 Refresh Bio]        │ │
+│  └───────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Scenario D: Staff-edited bio (AI disabled)**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Sarah is a wonderful long-term client who works in law... │
+│  ...                                                        │
+│                              ✏️ Edited by Jane on Mar 5    │
+└─────────────────────────────────────────────────────────────┘
+```
+No regenerate option shown - staff owns this bio.
+
+### Generation Flow
+
+```
+User clicks "Generate AI Bio"
+         │
+         ▼
+┌─────────────────────┐
+│  Show loading state │
+│  "Generating bio... │
+│   This takes a few  │
+│   seconds"          │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│  Aggregate customer │────▶│  Call Claude API    │
+│  data (parallel)    │     │  with prompt        │
+│  ~300ms             │     │  ~2-4s              │
+└─────────────────────┘     └─────────┬───────────┘
+                                      │
+                                      ▼
+                            ┌─────────────────────┐
+                            │  Cache bio in       │
+                            │  DynamoDB           │
+                            └─────────┬───────────┘
+                                      │
+                                      ▼
+                            ┌─────────────────────┐
+                            │  Display bio with   │
+                            │  "AI Generated"     │
+                            │  badge              │
+                            └─────────────────────┘
+```
+
+### Why Not Auto-Generate?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Auto on page load | Seamless UX once cached | 2-5s delay on first/stale view; unexpected |
+| Click to generate | User expects delay; transparent | Extra click required |
+| Background batch | Always fresh; no delay | Stale data; compute cost for inactive customers |
+
+**Recommendation:** Click-to-generate is more transparent and avoids frustrating users with unexpected delays. The loading state sets expectations.
+
+---
+
+## Design Decisions
+
+| Question | Decision |
+|----------|----------|
+| **LLM Provider** | Claude (Anthropic) |
+| **Bio ownership** | Once staff edits, AI regeneration is disabled for that customer |
+| **Staff notes** | Include all notes in generation |
+| **Generation trigger** | On-demand with "Generate AI Bio" button (see Performance section) |
+| **Tone customization** | Per-retailer configuration (professional vs friendly) |
+
+---
+
+## Retailer Configuration
+
+Per-retailer settings for bio generation:
+
+```json
+{
+  "tenant_id": "camillaandmarc-au",
+  "bio_settings": {
+    "tone": "professional",           // "professional" | "friendly" | "luxury"
+    "include_spend_data": true,       // Show AOV, lifetime spend
+    "include_conversation_starters": true,
+    "max_notes_to_include": 10,       // Most recent N notes
+    "language": "en-AU"
+  }
+}
+```
+
+### Tone Examples
+
+**Professional:**
+> "Ms. Chen has been a valued VIP client since 2021, demonstrating a consistent preference for classic silhouettes in neutral palettes. Her purchasing history reflects an appreciation for quality fabrications, particularly silk and cashmere from Zimmermann and Scanlan Theodore."
+
+**Friendly:**
+> "Sarah's been with us since 2021 and she's a dream to style! She loves classic, minimalist looks - think navy, black, and cream. Zimmermann and Scanlan Theodore are her go-tos, especially anything in silk or cashmere."
+
+**Luxury:**
+> "Sarah Chen, a distinguished VIP member since 2021, embodies refined elegance in her sartorial choices. Her discerning eye gravitates toward timeless silhouettes, favoring the understated sophistication of navy and cream, rendered in the finest silk and cashmere."
 
 ---
 
