@@ -1,0 +1,22 @@
+# AI Bio Generation Service Dependencies
+
+# Core
+anthropic>=0.18.0
+clickhouse-connect>=0.7.0
+fastapi>=0.109.0
+pydantic>=2.0.0
+uvicorn>=0.27.0
+
+# AWS
+boto3>=1.34.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+moto>=5.0.0  # AWS mocking
+
+# Dev
+black>=24.0.0
+ruff>=0.2.0
+mypy>=1.8.0

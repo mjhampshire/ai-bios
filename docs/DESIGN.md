@@ -1374,109 +1374,275 @@ Add bio generation settings to retailer configuration in DynamoDB.
 
 ---
 
-#### BIO-002: Build customer data aggregation service
+#### BIO-002: Build customer profile aggregation query
 **Type:** Story
 **Priority:** High
-**Story Points:** 5
+**Story Points:** 2
 
 **Description:**
-As the bio generation service, I need to aggregate customer data from multiple sources into a structured format for the LLM prompt.
+As the bio service, I need to fetch basic customer profile data (name, VIP status, loyalty tier, tenure).
 
 **Acceptance Criteria:**
-- [ ] Query ClickHouse for: orders, wishlist, clickstream, preferences
-- [ ] Query DynamoDB for: staff notes, loyalty data
-- [ ] Aggregate into JSON schema (see design doc)
-- [ ] Parallel queries for performance (<500ms total)
-- [ ] Handle missing data gracefully (sparse profiles)
+- [ ] Query `TWCCUSTOMER` table by tenantId + customerRef
+- [ ] Return: name, vipStatus, loyaltyTier, memberSince, preferredStore
+- [ ] Handle customer not found (return empty dict)
+- [ ] Unit tests with mock data
 
 ---
 
-#### BIO-003: Design and implement Claude prompt template
-**Type:** Story
-**Priority:** High
-**Story Points:** 3
-
-**Description:**
-As a product owner, I want the AI to generate consistent, high-quality bios that match the retailer's tone preference.
-
-**Acceptance Criteria:**
-- [ ] Prompt template with structured data injection
-- [ ] Support for 3 tones: professional, friendly, luxury
-- [ ] Output follows bio structure (style profile, shopping patterns, key notes, recent activity, conversation starters)
-- [ ] Guardrails to prevent hallucination (only use provided data)
-- [ ] Max token limits to control cost/latency
-
----
-
-#### BIO-004: Implement bio generation API endpoint
-**Type:** Story
-**Priority:** High
-**Story Points:** 5
-
-**Description:**
-As a frontend developer, I need an API to generate AI bios for customers.
-
-**Acceptance Criteria:**
-- [ ] `POST /api/v1/customers/{customerId}/bio/generate` endpoint
-- [ ] Calls data aggregation service
-- [ ] Calls Claude API with prompt
-- [ ] Returns generated bio with metadata (generated_at, confidence, conversation_starters)
-- [ ] Error handling for API failures
-- [ ] Request timeout handling (10s max)
-
----
-
-#### BIO-005: Implement bio caching layer
+#### BIO-003: Build preferences aggregation query
 **Type:** Story
 **Priority:** High
 **Story Points:** 3
 
 **Description:**
-As a system, I want to cache generated bios to avoid repeated API calls and reduce latency.
+As the bio service, I need to parse customer preferences JSON into structured likes/dislikes/sizes.
 
 **Acceptance Criteria:**
-- [ ] Store generated bios in DynamoDB
-- [ ] Cache schema: bio text, generated_at, data_snapshot, is_staff_edited
-- [ ] `GET /api/v1/customers/{customerId}/bio` returns cached bio
-- [ ] Track staleness (data changed since generation)
-- [ ] Return `is_stale: true` if new orders/wishlist/notes since generation
+- [ ] Query `TWCPREFERENCES` table (primary preference first)
+- [ ] Parse JSON: categories, colours, brands, fabrics
+- [ ] Separate likes vs dislikes (based on `dislike` flag)
+- [ ] Extract sizes by category (dresses, tops, bottoms, footwear)
+- [ ] Handle malformed JSON gracefully
+- [ ] Unit tests for JSON parsing edge cases
 
 ---
 
-#### BIO-006: Implement bio staleness detection
+#### BIO-004: Build purchase history aggregation queries
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As the bio service, I need purchase summary and top categories/brands from order history.
+
+**Acceptance Criteria:**
+- [ ] Query `TWCALLORDERS` for: total orders, lifetime spend, AOV, first/last purchase
+- [ ] Query `ORDERLINE` + `TWCVARIANT` for top categories, brands, colors
+- [ ] Query recent purchases (last 6 months)
+- [ ] Handle customers with no orders
+- [ ] Unit tests
+
+---
+
+#### BIO-005: Build wishlist aggregation query
+**Type:** Story
+**Priority:** High
+**Story Points:** 2
+
+**Description:**
+As the bio service, I need to fetch active wishlist items.
+
+**Acceptance Criteria:**
+- [ ] Query `TWCWISHLIST` + `WISHLISTITEM` joined
+- [ ] Filter: deleted='0', purchased='0'
+- [ ] Return: product name, price, brand, customerInterest
+- [ ] Limit to 10 most recent items
+- [ ] Unit tests
+
+---
+
+#### BIO-006: Build clickstream aggregation query
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 2
+
+**Description:**
+As the bio service, I need recent browsing behavior (last 30 days).
+
+**Acceptance Criteria:**
+- [ ] Query `TWCCLICKSTREAM` grouped by productType, brand
+- [ ] Return top 5 categories and brands by view count
+- [ ] Filter to last 30 days
+- [ ] Handle customers with no clickstream data
+- [ ] Unit tests
+
+---
+
+#### BIO-007: Build customer messages aggregation query
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 2
+
+**Description:**
+As the bio service, I need customer-sent messages for context.
+
+**Acceptance Criteria:**
+- [ ] Query `TWCCUSTOMER_MESSAGE` where isReply='1'
+- [ ] Return: message text, date, store
+- [ ] Limit to 5 most recent
+- [ ] Truncate long messages (>500 chars)
+- [ ] Unit tests
+
+---
+
+#### BIO-008: Build staff notes aggregation query
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 2
+
+**Description:**
+As the bio service, I need staff notes about the customer.
+
+**Acceptance Criteria:**
+- [ ] Query `TWCNOTES` table (when available)
+- [ ] Return: note text, date, author
+- [ ] Limit to 20 most recent
+- [ ] Placeholder implementation until table exists
+- [ ] Unit tests
+
+---
+
+#### BIO-009: Build parallel aggregation orchestrator
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As the bio service, I need to run all aggregation queries in parallel for performance.
+
+**Acceptance Criteria:**
+- [ ] Use asyncio + ThreadPoolExecutor for parallel execution
+- [ ] All 8 queries run concurrently
+- [ ] Total aggregation time <500ms (target)
+- [ ] Combine results into single structured dict
+- [ ] Error handling: partial failure returns partial data
+- [ ] Logging for query timing
+- [ ] Integration tests with ClickHouse
+
+---
+
+#### BIO-010: Design Claude prompt template
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As a product owner, I want a well-crafted prompt that generates consistent, high-quality bios.
+
+**Acceptance Criteria:**
+- [ ] Prompt template with JSON data injection point
+- [ ] Clear output format instructions (sections, lengths)
+- [ ] Tone instructions for: professional, friendly, luxury
+- [ ] Guardrails: "only use provided data", "do not invent details"
+- [ ] Conversation starters extraction instructions
+- [ ] Document prompt in design doc
+- [ ] Test with sample data for each tone
+
+---
+
+#### BIO-011: Implement Claude API client
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As the bio service, I need to call Claude API to generate bios.
+
+**Acceptance Criteria:**
+- [ ] Use `anthropic` Python SDK
+- [ ] Configure model: claude-sonnet-4-20250514
+- [ ] Set max_tokens: 1024
+- [ ] Inject customer data JSON into prompt
+- [ ] Parse response to extract conversation starters
+- [ ] Handle API errors (rate limits, timeouts)
+- [ ] Configurable timeout (default 30s)
+- [ ] Unit tests with mocked API
+
+---
+
+#### BIO-012: Implement bio response parser
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 2
+
+**Description:**
+As the bio service, I need to parse Claude's response into structured output.
+
+**Acceptance Criteria:**
+- [ ] Extract full bio text
+- [ ] Extract conversation starters as list
+- [ ] Handle missing sections gracefully
+- [ ] Validate response format
+- [ ] Unit tests with various response formats
+
+---
+
+#### BIO-013: Implement bio cache repository (DynamoDB)
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As the bio service, I need to cache generated bios in DynamoDB.
+
+**Acceptance Criteria:**
+- [ ] DynamoDB table: `twc-customer-bios`
+- [ ] Schema: tenantId (PK), customerRef (SK), bio, generated_at, snapshot_hash, is_staff_edited
+- [ ] CRUD operations: get, save, delete
+- [ ] TTL support for auto-expiry (optional)
+- [ ] Unit tests with mocked DynamoDB
+
+---
+
+#### BIO-014: Implement staleness detection
 **Type:** Story
 **Priority:** Medium
 **Story Points:** 3
 
 **Description:**
-As a staff member, I want to know when a bio is outdated so I can regenerate it.
+As the bio service, I need to detect when a bio is stale (underlying data changed).
 
 **Acceptance Criteria:**
-- [ ] Track last bio generation timestamp
-- [ ] Compare against latest: order date, wishlist update, note added, preference change
-- [ ] Return `stale_reason` in API response (e.g., "2 new orders since last update")
-- [ ] Don't mark staff-edited bios as stale (AI disabled)
+- [ ] Create snapshot hash from key data points (order count, last purchase, wishlist count)
+- [ ] Store hash with cached bio
+- [ ] Compare current data hash vs stored hash
+- [ ] Return `is_stale: true` and `stale_reason` when different
+- [ ] Skip staleness check for staff-edited bios
+- [ ] Unit tests
 
 ---
 
-#### BIO-007: Implement staff bio editing
+#### BIO-015: Implement bio service orchestrator
+**Type:** Story
+**Priority:** High
+**Story Points:** 5
+
+**Description:**
+As the API layer, I need a service that orchestrates aggregation, generation, and caching.
+
+**Acceptance Criteria:**
+- [ ] `get_bio()`: Return cached bio or None
+- [ ] `generate_bio()`: Aggregate → Generate → Cache
+- [ ] `update_bio()`: Staff edit, set is_staff_edited=True
+- [ ] `reset_to_ai()`: Clear staff edit, regenerate
+- [ ] Block regeneration for staff-edited bios (raise error)
+- [ ] Get retailer settings for tone configuration
+- [ ] Integration tests
+
+---
+
+#### BIO-016: Implement bio API endpoints
 **Type:** Story
 **Priority:** High
 **Story Points:** 3
 
 **Description:**
-As a staff member, I want to edit and save the AI-generated bio to add my personal knowledge.
+As a frontend developer, I need REST API endpoints for bio operations.
 
 **Acceptance Criteria:**
-- [ ] `PUT /api/v1/customers/{customerId}/bio` endpoint
-- [ ] Save edited bio text
-- [ ] Set `is_staff_edited: true`, `edited_by`, `edited_at`
-- [ ] Once staff-edited, `generate` endpoint returns 400 with message
-- [ ] Option to "Reset to AI" which clears staff edits (requires confirmation)
+- [ ] `GET /api/v1/customers/{customer_ref}/bio` - Get current bio
+- [ ] `POST /api/v1/customers/{customer_ref}/bio/generate` - Generate AI bio
+- [ ] `PUT /api/v1/customers/{customer_ref}/bio` - Staff edit bio
+- [ ] `POST /api/v1/customers/{customer_ref}/bio/reset` - Reset to AI
+- [ ] Proper error responses (400, 404, 500)
+- [ ] Request validation with Pydantic
+- [ ] OpenAPI documentation
+- [ ] Integration tests
 
 ---
 
-#### BIO-008: Build bio display component (frontend)
+#### BIO-017: Build bio display component (frontend)
 **Type:** Story
 **Priority:** High
 **Story Points:** 5
@@ -1495,7 +1661,7 @@ As a staff member viewing a customer profile, I want to see their bio with clear
 
 ---
 
-#### BIO-009: Build bio edit modal (frontend)
+#### BIO-018: Build bio edit modal (frontend)
 **Type:** Story
 **Priority:** Medium
 **Story Points:** 3
@@ -1512,7 +1678,7 @@ As a staff member, I want to edit the bio in a modal with a rich text editor.
 
 ---
 
-#### BIO-010: Add conversation starters component
+#### BIO-019: Add conversation starters component
 **Type:** Story
 **Priority:** Medium
 **Story Points:** 2
@@ -1528,7 +1694,7 @@ As a staff member, I want to see actionable conversation starters based on the c
 
 ---
 
-#### BIO-011: Implement bio generation audit logging
+#### BIO-020: Implement bio generation audit logging
 **Type:** Story
 **Priority:** Low
 **Story Points:** 2
@@ -1544,7 +1710,7 @@ As an admin, I want to track bio generation and edits for compliance and debuggi
 
 ---
 
-#### BIO-012: Add bio settings to retailer admin UI
+#### BIO-021: Add bio settings to retailer admin UI
 **Type:** Story
 **Priority:** Low
 **Story Points:** 3
@@ -1565,29 +1731,42 @@ As a retailer admin, I want to configure bio generation settings for my brand.
 
 | Phase | Stories | Points |
 |-------|---------|--------|
-| Backend Core | BIO-001 to BIO-007 | 24 |
-| Frontend | BIO-008 to BIO-010 | 10 |
-| Admin & Audit | BIO-011, BIO-012 | 5 |
-| **Total** | **12 stories** | **~39 points** |
+| Configuration | BIO-001 | 2 |
+| Data Aggregation | BIO-002 to BIO-009 | 19 |
+| Claude Integration | BIO-010 to BIO-012 | 8 |
+| Caching & Staleness | BIO-013, BIO-014 | 6 |
+| Orchestration & API | BIO-015, BIO-016 | 8 |
+| Frontend | BIO-017 to BIO-019 | 10 |
+| Admin & Audit | BIO-020, BIO-021 | 5 |
+| **Total** | **21 stories** | **~58 points** |
 
 ### Suggested Sprint Breakdown
 
-**Sprint 1: Foundation**
+**Sprint 1: Foundation & Aggregation**
 - BIO-001: Retailer settings config
-- BIO-002: Data aggregation service
-- BIO-003: Claude prompt template
+- BIO-002: Customer profile aggregation query
+- BIO-003: Preferences aggregation query
+- BIO-004: Purchase history aggregation queries
+- BIO-005: Wishlist aggregation query
+- BIO-006: Clickstream aggregation query
 
-**Sprint 2: Core API**
-- BIO-004: Generation API endpoint
-- BIO-005: Caching layer
-- BIO-006: Staleness detection
+**Sprint 2: Aggregation & Claude**
+- BIO-007: Customer messages aggregation query
+- BIO-008: Staff notes aggregation query
+- BIO-009: Parallel aggregation orchestrator
+- BIO-010: Claude prompt template
+- BIO-011: Claude API client
+- BIO-012: Bio response parser
 
-**Sprint 3: Frontend**
-- BIO-007: Staff bio editing (API)
-- BIO-008: Bio display component
-- BIO-009: Bio edit modal
+**Sprint 3: Caching, Orchestration & API**
+- BIO-013: Bio cache repository (DynamoDB)
+- BIO-014: Staleness detection
+- BIO-015: Bio service orchestrator
+- BIO-016: Bio API endpoints
 
-**Sprint 4: Polish**
-- BIO-010: Conversation starters
-- BIO-011: Audit logging
-- BIO-012: Admin UI
+**Sprint 4: Frontend & Polish**
+- BIO-017: Bio display component
+- BIO-018: Bio edit modal
+- BIO-019: Conversation starters component
+- BIO-020: Audit logging
+- BIO-021: Bio settings admin UI
