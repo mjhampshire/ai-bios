@@ -493,12 +493,244 @@ Per-retailer settings for bio generation:
 
 ---
 
-## Next Steps
+## Proposed Jira Stories
 
-1. Finalize data aggregation schema
-2. Design prompt templates
-3. Build aggregation service (ClickHouse queries)
-4. Implement generation API
-5. Build UI components
-6. Test with sample customer data
-7. Staff feedback and iteration
+### Epic: AI-Generated Customer Bios
+
+Enable AI-powered bio generation to help staff quickly understand customer preferences and history.
+
+---
+
+#### BIO-001: Create retailer bio settings configuration
+**Type:** Task
+**Priority:** High
+**Story Points:** 2
+
+**Description:**
+Add bio generation settings to retailer configuration in DynamoDB.
+
+**Acceptance Criteria:**
+- [ ] Add `bio_settings` to retailer config schema
+- [ ] Support fields: `tone`, `include_spend_data`, `include_conversation_starters`, `max_notes_to_include`, `language`
+- [ ] Default values for retailers without explicit config
+- [ ] Admin API to update settings
+
+---
+
+#### BIO-002: Build customer data aggregation service
+**Type:** Story
+**Priority:** High
+**Story Points:** 5
+
+**Description:**
+As the bio generation service, I need to aggregate customer data from multiple sources into a structured format for the LLM prompt.
+
+**Acceptance Criteria:**
+- [ ] Query ClickHouse for: orders, wishlist, clickstream, preferences
+- [ ] Query DynamoDB for: staff notes, loyalty data
+- [ ] Aggregate into JSON schema (see design doc)
+- [ ] Parallel queries for performance (<500ms total)
+- [ ] Handle missing data gracefully (sparse profiles)
+
+---
+
+#### BIO-003: Design and implement Claude prompt template
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As a product owner, I want the AI to generate consistent, high-quality bios that match the retailer's tone preference.
+
+**Acceptance Criteria:**
+- [ ] Prompt template with structured data injection
+- [ ] Support for 3 tones: professional, friendly, luxury
+- [ ] Output follows bio structure (style profile, shopping patterns, key notes, recent activity, conversation starters)
+- [ ] Guardrails to prevent hallucination (only use provided data)
+- [ ] Max token limits to control cost/latency
+
+---
+
+#### BIO-004: Implement bio generation API endpoint
+**Type:** Story
+**Priority:** High
+**Story Points:** 5
+
+**Description:**
+As a frontend developer, I need an API to generate AI bios for customers.
+
+**Acceptance Criteria:**
+- [ ] `POST /api/v1/customers/{customerId}/bio/generate` endpoint
+- [ ] Calls data aggregation service
+- [ ] Calls Claude API with prompt
+- [ ] Returns generated bio with metadata (generated_at, confidence, conversation_starters)
+- [ ] Error handling for API failures
+- [ ] Request timeout handling (10s max)
+
+---
+
+#### BIO-005: Implement bio caching layer
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As a system, I want to cache generated bios to avoid repeated API calls and reduce latency.
+
+**Acceptance Criteria:**
+- [ ] Store generated bios in DynamoDB
+- [ ] Cache schema: bio text, generated_at, data_snapshot, is_staff_edited
+- [ ] `GET /api/v1/customers/{customerId}/bio` returns cached bio
+- [ ] Track staleness (data changed since generation)
+- [ ] Return `is_stale: true` if new orders/wishlist/notes since generation
+
+---
+
+#### BIO-006: Implement bio staleness detection
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 3
+
+**Description:**
+As a staff member, I want to know when a bio is outdated so I can regenerate it.
+
+**Acceptance Criteria:**
+- [ ] Track last bio generation timestamp
+- [ ] Compare against latest: order date, wishlist update, note added, preference change
+- [ ] Return `stale_reason` in API response (e.g., "2 new orders since last update")
+- [ ] Don't mark staff-edited bios as stale (AI disabled)
+
+---
+
+#### BIO-007: Implement staff bio editing
+**Type:** Story
+**Priority:** High
+**Story Points:** 3
+
+**Description:**
+As a staff member, I want to edit and save the AI-generated bio to add my personal knowledge.
+
+**Acceptance Criteria:**
+- [ ] `PUT /api/v1/customers/{customerId}/bio` endpoint
+- [ ] Save edited bio text
+- [ ] Set `is_staff_edited: true`, `edited_by`, `edited_at`
+- [ ] Once staff-edited, `generate` endpoint returns 400 with message
+- [ ] Option to "Reset to AI" which clears staff edits (requires confirmation)
+
+---
+
+#### BIO-008: Build bio display component (frontend)
+**Type:** Story
+**Priority:** High
+**Story Points:** 5
+
+**Description:**
+As a staff member viewing a customer profile, I want to see their bio with clear indication of its source and freshness.
+
+**Acceptance Criteria:**
+- [ ] Display bio in customer profile page
+- [ ] Show "Generate AI Bio" button if no bio exists
+- [ ] Show "AI Generated" badge with timestamp for AI bios
+- [ ] Show "Edited by [name] on [date]" badge for staff-edited bios
+- [ ] Show "New activity - Refresh?" banner for stale AI bios
+- [ ] Loading state with "Generating bio... This takes a few seconds"
+- [ ] Expandable/collapsible for long bios
+
+---
+
+#### BIO-009: Build bio edit modal (frontend)
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 3
+
+**Description:**
+As a staff member, I want to edit the bio in a modal with a rich text editor.
+
+**Acceptance Criteria:**
+- [ ] Edit button opens modal with current bio text
+- [ ] Markdown or rich text editor
+- [ ] Save/Cancel buttons
+- [ ] Confirmation if overwriting AI-generated bio ("This will disable AI updates")
+- [ ] Success/error feedback
+
+---
+
+#### BIO-010: Add conversation starters component
+**Type:** Story
+**Priority:** Medium
+**Story Points:** 2
+
+**Description:**
+As a staff member, I want to see actionable conversation starters based on the customer's recent activity.
+
+**Acceptance Criteria:**
+- [ ] Display conversation starters below bio
+- [ ] 2-4 suggestions based on: wishlist items, recent purchases, browse activity
+- [ ] Clickable to navigate to relevant product/order
+- [ ] Update when bio is regenerated
+
+---
+
+#### BIO-011: Implement bio generation audit logging
+**Type:** Story
+**Priority:** Low
+**Story Points:** 2
+
+**Description:**
+As an admin, I want to track bio generation and edits for compliance and debugging.
+
+**Acceptance Criteria:**
+- [ ] Log: customer_id (hashed), tenant_id, action (generate/edit/reset), timestamp, user_id
+- [ ] Don't log bio content or PII
+- [ ] Store in audit log table
+- [ ] Retention policy (90 days)
+
+---
+
+#### BIO-012: Add bio settings to retailer admin UI
+**Type:** Story
+**Priority:** Low
+**Story Points:** 3
+
+**Description:**
+As a retailer admin, I want to configure bio generation settings for my brand.
+
+**Acceptance Criteria:**
+- [ ] Settings page in retailer admin
+- [ ] Tone selector (professional/friendly/luxury) with preview
+- [ ] Toggle: include spend data
+- [ ] Toggle: include conversation starters
+- [ ] Save confirmation
+
+---
+
+### Story Summary
+
+| Phase | Stories | Points |
+|-------|---------|--------|
+| Backend Core | BIO-001 to BIO-007 | 24 |
+| Frontend | BIO-008 to BIO-010 | 10 |
+| Admin & Audit | BIO-011, BIO-012 | 5 |
+| **Total** | **12 stories** | **~39 points** |
+
+### Suggested Sprint Breakdown
+
+**Sprint 1: Foundation**
+- BIO-001: Retailer settings config
+- BIO-002: Data aggregation service
+- BIO-003: Claude prompt template
+
+**Sprint 2: Core API**
+- BIO-004: Generation API endpoint
+- BIO-005: Caching layer
+- BIO-006: Staleness detection
+
+**Sprint 3: Frontend**
+- BIO-007: Staff bio editing (API)
+- BIO-008: Bio display component
+- BIO-009: Bio edit modal
+
+**Sprint 4: Polish**
+- BIO-010: Conversation starters
+- BIO-011: Audit logging
+- BIO-012: Admin UI
