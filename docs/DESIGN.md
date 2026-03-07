@@ -739,6 +739,587 @@ User clicks "Generate AI Bio"
 
 ---
 
+## Implementation Details
+
+### 1. Data Aggregation Service
+
+Python service using `clickhouse-connect` to run queries in parallel:
+
+```python
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import clickhouse_connect
+import json
+
+class BioDataAggregator:
+    """Aggregates customer data from ClickHouse for bio generation."""
+
+    def __init__(self, clickhouse_config: dict):
+        self.client = clickhouse_connect.get_client(
+            host=clickhouse_config['host'],
+            port=clickhouse_config['port'],
+            username=clickhouse_config['username'],
+            password=clickhouse_config['password'],
+            database=clickhouse_config['database'],
+        )
+        self.executor = ThreadPoolExecutor(max_workers=10)
+
+    async def aggregate(self, tenant_id: str, customer_ref: str) -> dict:
+        """
+        Aggregate all customer data in parallel.
+        Returns structured dict ready for prompt injection.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Run all queries in parallel
+        results = await asyncio.gather(
+            loop.run_in_executor(self.executor, self._fetch_customer_profile, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_preferences, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_purchase_summary, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_top_purchased, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_recent_purchases, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_wishlist, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_browsing, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_customer_messages, tenant_id, customer_ref),
+            loop.run_in_executor(self.executor, self._fetch_staff_notes, tenant_id, customer_ref),
+        )
+
+        return {
+            "customer": results[0],
+            "preferences": results[1],
+            "purchase_summary": results[2],
+            "top_purchased": results[3],
+            "recent_purchases": results[4],
+            "wishlist": results[5],
+            "recent_browsing": results[6],
+            "customer_messages": results[7],
+            "staff_notes": results[8],
+        }
+
+    def _fetch_customer_profile(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT
+                firstName, lastName, vipStatus, loyaltyTier,
+                memberSince, preferredStore, usualStore
+            FROM TWCCUSTOMER
+            WHERE tenantId = {tenant_id:String}
+              AND customerRef = {customer_ref:String}
+              AND deleted = '0'
+            LIMIT 1
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        if result.row_count == 0:
+            return {}
+
+        row = result.first_row
+        return {
+            "name": f"{row[0]} {row[1]}".strip(),
+            "first_name": row[0],
+            "vip_status": row[2],
+            "loyalty_tier": row[3],
+            "member_since": row[4].strftime("%Y-%m") if row[4] else None,
+            "preferred_store": row[5],
+            "usual_store": row[6],
+        }
+
+    def _fetch_preferences(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT preferences
+            FROM TWCPREFERENCES
+            WHERE tenantId = {tenant_id:String}
+              AND customerRef = {customer_ref:String}
+              AND deleted = '0'
+            ORDER BY isPrimary DESC, updatedAt DESC
+            LIMIT 1
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        if result.row_count == 0:
+            return {"likes": {}, "dislikes": {}, "sizes": {}}
+
+        prefs_json = result.first_row[0]
+        return self._parse_preferences_json(prefs_json)
+
+    def _parse_preferences_json(self, prefs_json: str) -> dict:
+        """Parse the preferences JSON into likes/dislikes/sizes."""
+        try:
+            data = json.loads(prefs_json) if prefs_json else {}
+        except json.JSONDecodeError:
+            return {"likes": {}, "dislikes": {}, "sizes": {}}
+
+        likes = {"categories": [], "colors": [], "brands": [], "fabrics": []}
+        dislikes = {"categories": [], "colors": [], "brands": [], "fabrics": []}
+        sizes = {}
+
+        # Categories
+        for item in data.get("categories", []):
+            target = dislikes if item.get("dislike") else likes
+            target["categories"].append(item.get("value"))
+
+        # Colors
+        for item in data.get("colours", []):
+            target = dislikes if item.get("dislike") else likes
+            target["colors"].append(item.get("value"))
+
+        # Sizes by category
+        size_fields = ["dresses", "tops", "bottoms", "footwear"]
+        for field in size_fields:
+            items = data.get(field, [])
+            if items:
+                sizes[field] = items[0].get("value")
+
+        return {"likes": likes, "dislikes": dislikes, "sizes": sizes}
+
+    def _fetch_purchase_summary(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT
+                count(DISTINCT orderId) as total_orders,
+                sum(amount) as lifetime_spend,
+                avg(amount) as avg_order_value,
+                min(orderDate) as first_purchase,
+                max(orderDate) as last_purchase,
+                dateDiff('day', max(orderDate), now()) as days_since_last
+            FROM TWCALLORDERS
+            WHERE tenantId = {tenant_id:String}
+              AND customerRef = {customer_ref:String}
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        row = result.first_row
+        return {
+            "total_orders": row[0] or 0,
+            "lifetime_spend": float(row[1] or 0),
+            "avg_order_value": round(float(row[2] or 0)),
+            "first_purchase_date": row[3].strftime("%Y-%m-%d") if row[3] else None,
+            "last_purchase_date": row[4].strftime("%Y-%m-%d") if row[4] else None,
+            "days_since_last_purchase": row[5] or 0,
+        }
+
+    def _fetch_top_purchased(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT
+                v.category, v.brand, v.color,
+                count(*) as cnt, sum(ol.orderLineValue) as spend
+            FROM ORDERLINE ol
+            JOIN TWCVARIANT v ON ol.variantRef = v.variantRef AND ol.tenantId = v.tenantId
+            WHERE ol.tenantId = {tenant_id:String}
+              AND ol.customerRef = {customer_ref:String}
+            GROUP BY v.category, v.brand, v.color
+            ORDER BY cnt DESC
+            LIMIT 20
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        categories, brands, colors = {}, {}, {}
+        for row in result.result_rows:
+            cat, brand, color, cnt, spend = row
+            if cat:
+                categories[cat] = categories.get(cat, 0) + cnt
+            if brand:
+                brands[brand] = brands.get(brand, 0) + cnt
+            if color:
+                colors[color] = colors.get(color, 0) + cnt
+
+        return {
+            "categories": sorted(categories.keys(), key=lambda x: categories[x], reverse=True)[:5],
+            "brands": sorted(brands.keys(), key=lambda x: brands[x], reverse=True)[:5],
+            "colors": sorted(colors.keys(), key=lambda x: colors[x], reverse=True)[:5],
+        }
+
+    def _fetch_recent_purchases(self, tenant_id: str, customer_ref: str) -> list:
+        result = self.client.query("""
+            SELECT ol.orderLineDate, ol.variantName, ol.orderLineValue, v.brand, v.category
+            FROM ORDERLINE ol
+            JOIN TWCVARIANT v ON ol.variantRef = v.variantRef AND ol.tenantId = v.tenantId
+            WHERE ol.tenantId = {tenant_id:String}
+              AND ol.customerRef = {customer_ref:String}
+              AND ol.orderLineDate >= now() - INTERVAL 6 MONTH
+            ORDER BY ol.orderLineDate DESC
+            LIMIT 5
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        return [
+            {"date": row[0].strftime("%Y-%m-%d"), "item": row[1], "price": row[2], "brand": row[3]}
+            for row in result.result_rows
+        ]
+
+    def _fetch_wishlist(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT wi.productName, wi.price, wi.customerInterest, wi.createdAt, wi.brandId
+            FROM TWCWISHLIST w
+            JOIN WISHLISTITEM wi ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
+            WHERE w.tenantId = {tenant_id:String}
+              AND w.customerRef = {customer_ref:String}
+              AND w.deleted = '0' AND wi.deleted = '0' AND wi.purchased = '0'
+            ORDER BY wi.createdAt DESC
+            LIMIT 5
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        items = [
+            {"name": row[0], "price": row[1], "interest": row[2], "brand": row[4]}
+            for row in result.result_rows
+        ]
+        return {"count": len(items), "items": items}
+
+    def _fetch_browsing(self, tenant_id: str, customer_ref: str) -> dict:
+        result = self.client.query("""
+            SELECT productType, brand, count(*) as cnt
+            FROM TWCCLICKSTREAM
+            WHERE tenantId = {tenant_id:String}
+              AND customerRef = {customer_ref:String}
+              AND timeStamp >= now() - INTERVAL 30 DAY
+            GROUP BY productType, brand
+            ORDER BY cnt DESC
+            LIMIT 10
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        categories, brands = {}, {}
+        for row in result.result_rows:
+            if row[0]:
+                categories[row[0]] = categories.get(row[0], 0) + row[2]
+            if row[1]:
+                brands[row[1]] = brands.get(row[1], 0) + row[2]
+
+        return {
+            "categories": sorted(categories.keys(), key=lambda x: categories[x], reverse=True)[:5],
+            "brands": sorted(brands.keys(), key=lambda x: brands[x], reverse=True)[:5],
+        }
+
+    def _fetch_customer_messages(self, tenant_id: str, customer_ref: str) -> list:
+        result = self.client.query("""
+            SELECT message, createdAt, storeName
+            FROM TWCCUSTOMER_MESSAGE
+            WHERE tenantId = {tenant_id:String}
+              AND customerRef = {customer_ref:String}
+              AND isReply = '1'
+            ORDER BY createdAt DESC
+            LIMIT 5
+        """, parameters={"tenant_id": tenant_id, "customer_ref": customer_ref})
+
+        return [
+            {"message": row[0], "date": row[1].strftime("%Y-%m-%d"), "store": row[2]}
+            for row in result.result_rows
+        ]
+
+    def _fetch_staff_notes(self, tenant_id: str, customer_ref: str) -> list:
+        # Placeholder - implement when TWCNOTES table is added
+        return []
+```
+
+### 2. Claude API Integration
+
+Using the `anthropic` Python SDK:
+
+```python
+import anthropic
+from typing import Optional
+
+class BioGenerator:
+    """Generates customer bios using Claude API."""
+
+    def __init__(self, api_key: str):
+        self.client = anthropic.Anthropic(api_key=api_key)
+
+    def generate(
+        self,
+        customer_data: dict,
+        tone: str = "professional",  # professional, friendly, luxury
+        include_conversation_starters: bool = True,
+    ) -> dict:
+        """
+        Generate a bio from aggregated customer data.
+
+        Returns:
+            {
+                "bio": "...",
+                "conversation_starters": ["...", "..."],
+            }
+        """
+        prompt = self._build_prompt(customer_data, tone, include_conversation_starters)
+
+        message = self.client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        response_text = message.content[0].text
+        return self._parse_response(response_text)
+
+    def _build_prompt(
+        self,
+        data: dict,
+        tone: str,
+        include_starters: bool,
+    ) -> str:
+        tone_instructions = {
+            "professional": "Use a professional, business-appropriate tone. Refer to the customer formally.",
+            "friendly": "Use a warm, friendly tone. Be personable and casual.",
+            "luxury": "Use an elegant, refined tone befitting a luxury retail experience.",
+        }
+
+        prompt = f"""You are a retail clienteling assistant. Generate a customer bio based on the data provided.
+
+**Tone:** {tone_instructions.get(tone, tone_instructions["professional"])}
+
+**Customer Data:**
+```json
+{json.dumps(data, indent=2, default=str)}
+```
+
+**Output Format:**
+Write a bio with the following sections:
+
+1. **Opening** (1 sentence): Customer name, tenure, and loyalty status.
+
+2. **Style Profile** (2-3 sentences): Their style preferences, favorite categories, colors, brands. Include sizes if known. Mention any dislikes to avoid.
+
+3. **Shopping Patterns** (1-2 sentences): How often they shop, average spend, preferred channel/store.
+
+4. **Key Notes** (bullet points): Important personal details from staff notes. Only include if notes exist.
+
+5. **Recent Activity** (1-2 sentences): What they've been browsing, wishlisted, or recently purchased.
+
+"""
+        if include_starters:
+            prompt += """6. **Conversation Starters** (2-3 bullet points): Specific, actionable suggestions for engaging this customer based on their recent activity, wishlist, or purchase history.
+
+"""
+
+        prompt += """**Rules:**
+- Only use information provided in the data. Do not invent details.
+- If data is missing for a section, skip that section.
+- Keep it concise - the entire bio should be readable in 30 seconds.
+- For conversation starters, be specific (mention actual products or dates).
+"""
+
+        return prompt
+
+    def _parse_response(self, response: str) -> dict:
+        """Parse Claude's response into structured output."""
+        # Extract conversation starters if present
+        starters = []
+        if "Conversation Starters" in response:
+            lines = response.split("Conversation Starters")[1].split("\n")
+            for line in lines:
+                line = line.strip()
+                if line.startswith("-") or line.startswith("•"):
+                    starters.append(line.lstrip("-•").strip())
+                if len(starters) >= 3:
+                    break
+
+        return {
+            "bio": response,
+            "conversation_starters": starters,
+        }
+```
+
+### 3. Bio Service (Orchestration)
+
+Combines aggregation and generation:
+
+```python
+from datetime import datetime
+from typing import Optional
+import hashlib
+
+class BioService:
+    """Orchestrates bio generation and caching."""
+
+    def __init__(
+        self,
+        aggregator: BioDataAggregator,
+        generator: BioGenerator,
+        cache: BioCacheRepository,  # DynamoDB
+        settings: RetailerSettingsRepository,
+    ):
+        self.aggregator = aggregator
+        self.generator = generator
+        self.cache = cache
+        self.settings = settings
+
+    async def get_bio(self, tenant_id: str, customer_ref: str) -> Optional[dict]:
+        """Get cached bio if exists."""
+        return await self.cache.get(tenant_id, customer_ref)
+
+    async def generate_bio(self, tenant_id: str, customer_ref: str, user_id: str) -> dict:
+        """
+        Generate a new bio for a customer.
+
+        1. Check if staff-edited bio exists (block regeneration)
+        2. Aggregate customer data from ClickHouse
+        3. Get retailer settings (tone, etc.)
+        4. Call Claude to generate bio
+        5. Cache result
+        """
+        # Check for staff-edited bio
+        existing = await self.cache.get(tenant_id, customer_ref)
+        if existing and existing.get("is_staff_edited"):
+            raise ValueError("Cannot regenerate staff-edited bio. Use reset_to_ai first.")
+
+        # Aggregate data
+        customer_data = await self.aggregator.aggregate(tenant_id, customer_ref)
+
+        if not customer_data.get("customer"):
+            raise ValueError(f"Customer not found: {customer_ref}")
+
+        # Get retailer settings
+        retailer_settings = await self.settings.get_bio_settings(tenant_id)
+
+        # Generate bio
+        result = self.generator.generate(
+            customer_data=customer_data,
+            tone=retailer_settings.get("tone", "professional"),
+            include_conversation_starters=retailer_settings.get("include_conversation_starters", True),
+        )
+
+        # Create snapshot hash for staleness detection
+        snapshot_hash = self._create_snapshot_hash(customer_data)
+
+        # Cache result
+        bio_record = {
+            "tenant_id": tenant_id,
+            "customer_ref": customer_ref,
+            "bio": result["bio"],
+            "conversation_starters": result["conversation_starters"],
+            "generated_at": datetime.utcnow().isoformat(),
+            "generated_by": user_id,
+            "snapshot_hash": snapshot_hash,
+            "is_staff_edited": False,
+            "is_stale": False,
+        }
+
+        await self.cache.save(bio_record)
+
+        return bio_record
+
+    async def update_bio(self, tenant_id: str, customer_ref: str, bio_text: str, user_id: str) -> dict:
+        """Staff edits and saves bio. Disables AI regeneration."""
+        bio_record = {
+            "tenant_id": tenant_id,
+            "customer_ref": customer_ref,
+            "bio": bio_text,
+            "conversation_starters": [],  # Staff can add manually if needed
+            "edited_at": datetime.utcnow().isoformat(),
+            "edited_by": user_id,
+            "is_staff_edited": True,
+            "is_stale": False,
+        }
+
+        await self.cache.save(bio_record)
+        return bio_record
+
+    async def reset_to_ai(self, tenant_id: str, customer_ref: str, user_id: str) -> dict:
+        """Clear staff edits and regenerate AI bio."""
+        await self.cache.delete(tenant_id, customer_ref)
+        return await self.generate_bio(tenant_id, customer_ref, user_id)
+
+    def _create_snapshot_hash(self, data: dict) -> str:
+        """Create hash of key data points for staleness detection."""
+        key_data = {
+            "orders": data.get("purchase_summary", {}).get("total_orders"),
+            "last_purchase": data.get("purchase_summary", {}).get("last_purchase_date"),
+            "wishlist_count": data.get("wishlist", {}).get("count"),
+            "notes_count": len(data.get("staff_notes", [])),
+        }
+        return hashlib.md5(json.dumps(key_data, sort_keys=True).encode()).hexdigest()
+```
+
+### 4. API Endpoints (FastAPI)
+
+```python
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/api/v1/customers/{customer_ref}/bio")
+
+class GenerateBioRequest(BaseModel):
+    regenerate: bool = False
+
+class UpdateBioRequest(BaseModel):
+    bio: str
+
+@router.get("")
+async def get_bio(
+    customer_ref: str,
+    tenant_id: str = Depends(get_tenant_id),
+    bio_service: BioService = Depends(get_bio_service),
+):
+    """Get current bio for customer."""
+    bio = await bio_service.get_bio(tenant_id, customer_ref)
+    if not bio:
+        return {"exists": False, "bio": None}
+    return {"exists": True, **bio}
+
+@router.post("/generate")
+async def generate_bio(
+    customer_ref: str,
+    request: GenerateBioRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_current_user_id),
+    bio_service: BioService = Depends(get_bio_service),
+):
+    """Generate AI bio for customer."""
+    try:
+        bio = await bio_service.generate_bio(tenant_id, customer_ref, user_id)
+        return bio
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("")
+async def update_bio(
+    customer_ref: str,
+    request: UpdateBioRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_current_user_id),
+    bio_service: BioService = Depends(get_bio_service),
+):
+    """Staff updates bio (disables AI regeneration)."""
+    bio = await bio_service.update_bio(tenant_id, customer_ref, request.bio, user_id)
+    return bio
+
+@router.post("/reset")
+async def reset_to_ai(
+    customer_ref: str,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_current_user_id),
+    bio_service: BioService = Depends(get_bio_service),
+):
+    """Clear staff edits and regenerate AI bio."""
+    bio = await bio_service.reset_to_ai(tenant_id, customer_ref, user_id)
+    return bio
+```
+
+### 5. Dependencies
+
+```
+# requirements.txt
+anthropic>=0.18.0
+clickhouse-connect>=0.7.0
+fastapi>=0.109.0
+pydantic>=2.0.0
+boto3>=1.34.0  # For DynamoDB cache
+```
+
+### 6. Environment Variables
+
+```bash
+# Anthropic API
+ANTHROPIC_API_KEY=sk-ant-...
+
+# ClickHouse
+CLICKHOUSE_HOST=your-clickhouse-host
+CLICKHOUSE_PORT=8443
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=...
+CLICKHOUSE_DATABASE=default
+
+# DynamoDB (for bio cache)
+AWS_REGION=ap-southeast-2
+BIO_CACHE_TABLE=twc-customer-bios
+```
+
+---
+
 ## Retailer Configuration
 
 Per-retailer settings for bio generation:
