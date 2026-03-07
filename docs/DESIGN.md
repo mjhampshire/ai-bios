@@ -31,14 +31,236 @@ Use AI to generate a draft bio by synthesizing:
 
 ## Data Sources
 
-| Source | Data Points | Signal Strength |
-|--------|-------------|-----------------|
-| **Orders** | Categories, brands, colors, price points, frequency, recency, AOV, total spend | Strong |
-| **Wishlist** | Desired items, price sensitivity, aspiration vs. purchase gap | Strong |
-| **Preferences** | Explicit likes/dislikes for colors, styles, brands, fabrics | Very Strong |
-| **In-store Notes** | Staff observations, special requests, personal details | Very Strong |
-| **Clickstream** | Browse patterns, time spent, categories explored | Medium |
-| **Loyalty** | Tier, tenure, engagement level | Medium |
+| Source | Table(s) | Data Points | Signal Strength |
+|--------|----------|-------------|-----------------|
+| **Customer Profile** | `TWCCUSTOMER` | VIP status, loyalty tier, member since, preferred store | Strong |
+| **Orders** | `TWCALLORDERS`, `ORDERLINE`, `TWCVARIANT` | Categories, brands, colors, price points, frequency, AOV | Strong |
+| **Wishlist** | `TWCWISHLIST`, `WISHLISTITEM` | Desired items, price sensitivity, customer interest level | Strong |
+| **Preferences** | `TWCPREFERENCES` | Explicit likes/dislikes for colors, styles, brands, fabrics | Very Strong |
+| **Customer Messages** | `TWCCUSTOMER_MESSAGE` | Messages sent by customer (`isReply = '1'`) | Strong |
+| **Staff Notes** | `TWCNOTES` (to be added) | Staff observations, special requests, personal details | Very Strong |
+| **Clickstream** | `TWCCLICKSTREAM` | Browse patterns, categories explored, brands viewed | Medium |
+| **Gorgias (Future)** | External API | Sentiment, open tickets, support history | Medium |
+
+---
+
+## ClickHouse Schema & Queries
+
+### Tables Used
+
+```
+TWCCUSTOMER          - Customer profile, loyalty, VIP status
+TWCPREFERENCES       - Preferences JSON (likes/dislikes)
+TWCALLORDERS         - Order headers
+ORDERLINE            - Order line items
+TWCVARIANT           - Product catalog (for enrichment)
+TWCWISHLIST          - Wishlist headers
+WISHLISTITEM         - Wishlist items
+TWCCLICKSTREAM       - Browsing behavior
+TWCCUSTOMER_MESSAGE  - Customer messages (isReply = '1')
+TWCNOTES             - Staff notes (to be added)
+```
+
+### Aggregation Queries
+
+All queries filter by `tenantId` and `customerRef`.
+
+#### 1. Customer Profile
+
+```sql
+SELECT
+    customerId,
+    customerRef,
+    firstName,
+    lastName,
+    vipStatus,
+    loyaltyTier,
+    memberSince,
+    preferredStore,
+    usualStore
+FROM TWCCUSTOMER
+WHERE tenantId = {tenant_id:String}
+  AND customerRef = {customer_ref:String}
+  AND deleted = '0'
+LIMIT 1
+```
+
+#### 2. Preferences (Likes/Dislikes)
+
+```sql
+SELECT
+    preferences,
+    rangeName,
+    updatedAt
+FROM TWCPREFERENCES
+WHERE tenantId = {tenant_id:String}
+  AND customerId = {customer_id:String}
+  AND deleted = '0'
+ORDER BY isPrimary DESC, updatedAt DESC
+LIMIT 1
+```
+
+The `preferences` field contains JSON with structure:
+```json
+{
+  "categories": [{"id": "dresses", "value": "Dresses", "source": "staff", "dislike": false}],
+  "colours": [{"id": "navy", "value": "Navy", "source": "customer"}],
+  "dresses": [{"id": "size_10", "value": "10"}],
+  ...
+}
+```
+
+#### 3. Purchase History Summary
+
+```sql
+SELECT
+    count(DISTINCT o.orderId) as total_orders,
+    sum(o.amount) as lifetime_spend,
+    avg(o.amount) as avg_order_value,
+    max(o.orderDate) as last_purchase_date,
+    min(o.orderDate) as first_purchase_date,
+    dateDiff('day', max(o.orderDate), now()) as days_since_last_purchase
+FROM TWCALLORDERS o
+WHERE o.tenantId = {tenant_id:String}
+  AND o.customerRef = {customer_ref:String}
+```
+
+#### 4. Top Categories, Brands, Colors (from orders)
+
+```sql
+SELECT
+    v.category,
+    v.brand,
+    v.color,
+    count(*) as purchase_count,
+    sum(ol.orderLineValue) as total_spend
+FROM ORDERLINE ol
+JOIN TWCVARIANT v ON ol.variantRef = v.variantRef AND ol.tenantId = v.tenantId
+WHERE ol.tenantId = {tenant_id:String}
+  AND ol.customerRef = {customer_ref:String}
+GROUP BY v.category, v.brand, v.color
+ORDER BY purchase_count DESC
+LIMIT 20
+```
+
+#### 5. Recent Purchases (last 6 months)
+
+```sql
+SELECT
+    ol.orderLineDate,
+    ol.variantName,
+    ol.orderLineValue,
+    v.brand,
+    v.category,
+    v.color
+FROM ORDERLINE ol
+JOIN TWCVARIANT v ON ol.variantRef = v.variantRef AND ol.tenantId = v.tenantId
+WHERE ol.tenantId = {tenant_id:String}
+  AND ol.customerRef = {customer_ref:String}
+  AND ol.orderLineDate >= now() - INTERVAL 6 MONTH
+ORDER BY ol.orderLineDate DESC
+LIMIT 10
+```
+
+#### 6. Active Wishlist Items
+
+```sql
+SELECT
+    wi.productName,
+    wi.variantName,
+    wi.price,
+    wi.category,
+    wi.brandId,
+    wi.customerInterest,
+    wi.createdAt
+FROM TWCWISHLIST w
+JOIN WISHLISTITEM wi ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
+WHERE w.tenantId = {tenant_id:String}
+  AND w.customerRef = {customer_ref:String}
+  AND w.deleted = '0'
+  AND wi.deleted = '0'
+  AND wi.purchased = '0'
+ORDER BY wi.createdAt DESC
+LIMIT 10
+```
+
+#### 7. Recent Browsing (last 30 days)
+
+```sql
+SELECT
+    productType,
+    brand,
+    collectionName,
+    count(*) as view_count
+FROM TWCCLICKSTREAM
+WHERE tenantId = {tenant_id:String}
+  AND customerRef = {customer_ref:String}
+  AND timeStamp >= now() - INTERVAL 30 DAY
+GROUP BY productType, brand, collectionName
+ORDER BY view_count DESC
+LIMIT 15
+```
+
+#### 8. Customer Messages (sent by customer)
+
+```sql
+SELECT
+    message,
+    subjectLine,
+    createdAt,
+    staffFirstName,
+    storeName
+FROM TWCCUSTOMER_MESSAGE
+WHERE tenantId = {tenant_id:String}
+  AND customerRef = {customer_ref:String}
+  AND isReply = '1'
+ORDER BY createdAt DESC
+LIMIT 10
+```
+
+#### 9. Staff Notes (when table is added)
+
+```sql
+-- Placeholder for TWCNOTES table
+SELECT
+    note,
+    createdAt,
+    createdBy,
+    staffName
+FROM TWCNOTES
+WHERE tenantId = {tenant_id:String}
+  AND customerRef = {customer_ref:String}
+ORDER BY createdAt DESC
+LIMIT 20
+```
+
+### Query Execution Strategy
+
+Run queries in parallel for performance:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Parallel Query Execution                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ Customer     │  │ Preferences  │  │ Orders       │          │
+│  │ Profile      │  │              │  │ Summary      │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ Top Cats/    │  │ Recent       │  │ Wishlist     │          │
+│  │ Brands       │  │ Purchases    │  │ Items        │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ Browsing     │  │ Customer     │  │ Staff        │          │
+│  │ History      │  │ Messages     │  │ Notes        │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+│                                                                 │
+│  Total: ~300-500ms (parallel)                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -182,53 +404,93 @@ Before calling the LLM, aggregate raw data into a structured summary:
 {
   "customer": {
     "name": "Sarah Chen",
+    "customer_ref": "cust_12345",
     "customer_since": "2021-03",
-    "loyalty_tier": "VIP",
-    "lifetime_spend": 28500,
-    "total_orders": 34
+    "vip_status": "VIP",
+    "loyalty_tier": "Gold",
+    "preferred_store": "Sydney CBD",
+    "usual_store": "Sydney CBD"
   },
+  "purchase_summary": {
+    "total_orders": 34,
+    "lifetime_spend": 28500,
+    "avg_order_value": 838,
+    "first_purchase_date": "2021-03-15",
+    "last_purchase_date": "2025-02-15",
+    "days_since_last_purchase": 20
+  },
+  "top_purchased": {
+    "categories": [
+      {"name": "Dresses", "count": 18, "spend": 14200},
+      {"name": "Tops", "count": 12, "spend": 6800}
+    ],
+    "brands": [
+      {"name": "Zimmermann", "count": 15, "spend": 12500},
+      {"name": "Scanlan Theodore", "count": 8, "spend": 5200}
+    ],
+    "colors": [
+      {"name": "Navy", "count": 12},
+      {"name": "Black", "count": 10}
+    ]
+  },
+  "recent_purchases": [
+    {"date": "2025-02-15", "item": "Scanlan Theodore Blazer", "brand": "Scanlan Theodore", "price": 695},
+    {"date": "2025-01-20", "item": "Zimmermann Silk Dress", "brand": "Zimmermann", "price": 850}
+  ],
   "preferences": {
     "likes": {
-      "categories": ["Dresses", "Blazers", "Knitwear"],
+      "categories": ["Dresses", "Blazers"],
       "colors": ["Navy", "Black", "Cream"],
       "brands": ["Zimmermann", "Scanlan Theodore"],
-      "fabrics": ["Silk", "Cashmere"],
-      "styles": ["Classic", "Minimalist"]
+      "fabrics": ["Silk", "Cashmere"]
     },
     "dislikes": {
-      "colors": ["Red", "Orange"],
+      "colors": ["Red"],
       "fabrics": ["Wool"],
       "brands": ["Aje"]
     },
     "sizes": {
-      "dress": "10",
-      "top": "S"
+      "dresses": "10",
+      "tops": "S"
     }
   },
-  "shopping_behavior": {
-    "avg_order_value": 850,
-    "purchase_frequency_days": 30,
-    "preferred_channel": "in_store",
-    "last_purchase_date": "2025-02-15",
-    "recent_categories": ["Dresses", "Accessories"]
+  "wishlist": {
+    "count": 5,
+    "items": [
+      {"name": "Zimmermann Linen Midi Dress", "price": 695, "interest": "high", "added": "2025-03-01"},
+      {"name": "Camilla Silk Scarf", "price": 220, "interest": "medium", "added": "2025-02-28"}
+    ]
   },
-  "recent_activity": {
-    "wishlist_items": [
-      {"name": "Zimmermann Linen Midi Dress", "price": 695, "added": "2025-03-01"}
-    ],
-    "recent_views": ["Summer Dresses", "Resort Wear", "Linen Collection"],
-    "cart_abandonment": []
+  "recent_browsing": {
+    "categories": ["Dresses", "Resort Wear", "Accessories"],
+    "brands": ["Zimmermann", "Camilla"],
+    "collections": ["Summer 2025", "Resort"]
   },
+  "customer_messages": [
+    {"date": "2025-02-10", "message": "Hi, do you have the navy dress in size 10?", "store": "Sydney CBD"},
+    {"date": "2025-01-05", "message": "Thanks for letting me know about the sale!"}
+  ],
   "staff_notes": [
     {"date": "2025-01-20", "author": "Jane", "note": "Works in corporate law, needs smart workwear"},
     {"date": "2024-11-05", "author": "Mike", "note": "Allergic to wool - always suggest cashmere"},
     {"date": "2024-08-12", "author": "Jane", "note": "Has daughter Emma (12), occasionally shops for her"}
   ],
-  "special_dates": {
-    "birthday": "1985-06-15"
+  "gorgias": {
+    "status": "not_integrated",
+    "sentiment": null,
+    "open_tickets": null
   }
 }
 ```
+
+### Future: Gorgias Integration
+
+When integrated, Gorgias data will include:
+- **Sentiment score** - Overall customer sentiment from support interactions
+- **Open tickets** - Active support issues to be aware of
+- **Recent interactions** - Summary of support conversations
+
+This helps staff understand if a customer has unresolved issues before engaging.
 
 ---
 
