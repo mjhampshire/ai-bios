@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: twc-ai-bios-config
+  namespace: ai-bios
+data:
+  CLICKHOUSE_HOST: "your-clickhouse-host"
+  CLICKHOUSE_PORT: "8443"
+  CLICKHOUSE_USER: "default"
+  CLICKHOUSE_DATABASE: "default"
+  AWS_REGION: "ap-southeast-2"
+  BIO_CACHE_TABLE: "twc-customer-bios"
+  RETAILER_SETTINGS_TABLE: "twc-retailer-settings"

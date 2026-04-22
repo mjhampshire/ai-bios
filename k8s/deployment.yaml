@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: twc-ai-bios
+  namespace: ai-bios
+  labels:
+    app: twc-ai-bios
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: twc-ai-bios
+  template:
+    metadata:
+      labels:
+        app: twc-ai-bios
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: twc-ai-bios
+          # UPDATE: Replace with your ECR repository and image tag
+          image: 354582224285.dkr.ecr.ap-southeast-2.amazonaws.com/twc-ai-bios:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: twc-ai-bios-config
+            - secretRef:
+                name: twc-ai-bios-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: twc-ai-bios
+                topologyKey: topology.kubernetes.io/zone

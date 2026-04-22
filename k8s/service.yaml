@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: twc-ai-bios
+  namespace: ai-bios
+  labels:
+    app: twc-ai-bios
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: twc-ai-bios

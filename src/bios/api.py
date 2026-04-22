@@ -1,11 +1,17 @@
 """FastAPI endpoints for bio service."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from .aggregator import BioDataAggregator
+from .config import get_clickhouse_config, get_dynamodb_config, get_anthropic_config
+from .generator import BioGenerator
+from .repositories import DynamoBioCacheRepository, DynamoRetailerSettingsRepository
 from .service import BioService
 
-router = APIRouter(prefix="/api/v1/customers/{customer_ref}/bio")
+router = APIRouter(prefix="/api/v1/customers/{customer_ref}/bio", tags=["bios"])
 
 
 # Request/Response models
@@ -35,23 +41,56 @@ class StalenessResponse(BaseModel):
     reason: str | None = None
 
 
-# Dependency injection stubs - implement based on your framework
-async def get_tenant_id() -> str:
-    """Get tenant ID from request context (e.g., JWT, header)."""
-    # TODO: Implement based on your auth system
-    raise NotImplementedError("Implement get_tenant_id based on your auth system")
+# Singleton instances (lazy initialized)
+_bio_service: Optional[BioService] = None
 
 
-async def get_current_user_id() -> str:
-    """Get current user ID from request context."""
-    # TODO: Implement based on your auth system
-    raise NotImplementedError("Implement get_current_user_id based on your auth system")
+def _get_bio_service_instance() -> BioService:
+    """Get or create singleton BioService instance."""
+    global _bio_service
+    if _bio_service is None:
+        ch_config = get_clickhouse_config()
+        dynamo_config = get_dynamodb_config()
+        anthropic_config = get_anthropic_config()
+
+        aggregator = BioDataAggregator(ch_config.to_dict())
+        generator = BioGenerator(anthropic_config.api_key)
+        cache = DynamoBioCacheRepository(
+            table_name=dynamo_config.bio_cache_table,
+            region=dynamo_config.region,
+        )
+        settings = DynamoRetailerSettingsRepository(
+            table_name=dynamo_config.retailer_settings_table,
+            region=dynamo_config.region,
+        )
+
+        _bio_service = BioService(
+            aggregator=aggregator,
+            generator=generator,
+            cache=cache,
+            settings=settings,
+        )
+    return _bio_service
+
+
+# Dependency injection
+async def get_tenant_id(
+    x_tenant_id: str = Header(..., alias="X-Tenant-ID", description="Retailer/tenant identifier")
+) -> str:
+    """Get tenant ID from X-Tenant-ID header."""
+    return x_tenant_id
+
+
+async def get_current_user_id(
+    x_user_id: str = Header(..., alias="X-User-ID", description="Staff user identifier")
+) -> str:
+    """Get current user ID from X-User-ID header."""
+    return x_user_id
 
 
 async def get_bio_service() -> BioService:
     """Get configured BioService instance."""
-    # TODO: Implement dependency injection
-    raise NotImplementedError("Implement get_bio_service dependency injection")
+    return _get_bio_service_instance()
 
 
 @router.get("", response_model=BioResponse)
