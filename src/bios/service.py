@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from .aggregator import BioDataAggregator
-from .generator import BioGenerator
+from .generator import BioGenerator, BioGenerationError, BioAPIError, BioParseError
 from .repositories import (
     BioCacheRepository,
     RetailerSettingsRepository,

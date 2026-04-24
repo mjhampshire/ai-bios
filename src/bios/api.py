@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from .aggregator import BioDataAggregator
 from .config import get_clickhouse_config, get_dynamodb_config, get_anthropic_config
-from .generator import BioGenerator
+from .generator import BioGenerator, BioAPIError, BioParseError, BioGenerationError
 from .repositories import (
     DynamoBioCacheRepository,
     DynamoRetailerSettingsRepository,
@@ -58,7 +58,12 @@ def _get_bio_service_instance() -> BioService:
         anthropic_config = get_anthropic_config()
 
         aggregator = BioDataAggregator(ch_config.to_dict())
-        generator = BioGenerator(anthropic_config.api_key)
+        generator = BioGenerator(
+            api_key=anthropic_config.api_key,
+            timeout=anthropic_config.timeout,
+            model=anthropic_config.model,
+            max_tokens=anthropic_config.max_tokens,
+        )
         cache = DynamoBioCacheRepository(
             table_name=dynamo_config.bio_cache_table,
             region=dynamo_config.region,
@@ -130,6 +135,14 @@ async def generate_bio(
         return BioResponse(exists=True, **bio)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except BioAPIError as e:
+        # Rate limits, auth errors, timeouts, connection errors
+        status_code = 503 if e.retry_after else 502
+        headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
+        raise HTTPException(status_code=status_code, detail=str(e), headers=headers)
+    except BioParseError as e:
+        # Claude returned unparseable response
+        raise HTTPException(status_code=502, detail=f"Failed to parse AI response: {e}")
 
 
 @router.put("", response_model=BioResponse)
@@ -155,8 +168,15 @@ async def reset_to_ai(
     bio_service: BioService = Depends(get_bio_service),
 ):
     """Clear staff edits and regenerate AI bio."""
-    bio = await bio_service.reset_to_ai(tenant_id, customer_ref, user_id)
-    return BioResponse(exists=True, **bio)
+    try:
+        bio = await bio_service.reset_to_ai(tenant_id, customer_ref, user_id)
+        return BioResponse(exists=True, **bio)
+    except BioAPIError as e:
+        status_code = 503 if e.retry_after else 502
+        headers = {"Retry-After": str(e.retry_after)} if e.retry_after else None
+        raise HTTPException(status_code=status_code, detail=str(e), headers=headers)
+    except BioParseError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to parse AI response: {e}")
 
 
 @router.get("/staleness", response_model=StalenessResponse)

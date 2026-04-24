@@ -117,6 +117,9 @@ Obtain an API key from [Anthropic Console](https://console.anthropic.com/).
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | - | Claude API key |
+| `ANTHROPIC_TIMEOUT` | No | 30.0 | API request timeout (seconds) |
+| `ANTHROPIC_MODEL` | No | claude-sonnet-4-20250514 | Claude model to use |
+| `ANTHROPIC_MAX_TOKENS` | No | 1024 | Max tokens in response |
 | `CLICKHOUSE_HOST` | Yes | localhost | ClickHouse hostname |
 | `CLICKHOUSE_PORT` | No | 8443 | ClickHouse port |
 | `CLICKHOUSE_USER` | No | default | ClickHouse username |

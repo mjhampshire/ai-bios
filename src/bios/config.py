@@ -56,13 +56,21 @@ class DynamoDBConfig:
 class AnthropicConfig:
     """Anthropic API configuration."""
     api_key: str
+    timeout: float
+    model: str
+    max_tokens: int
 
     @classmethod
     def from_env(cls) -> "AnthropicConfig":
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        return cls(api_key=api_key)
+        return cls(
+            api_key=api_key,
+            timeout=float(os.getenv("ANTHROPIC_TIMEOUT", "30.0")),
+            model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024")),
+        )
 
 
 def get_clickhouse_config() -> ClickHouseConfig:
