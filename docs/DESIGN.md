@@ -494,6 +494,92 @@ This helps staff understand if a customer has unresolved issues before engaging.
 
 ---
 
+## Claude Prompt Template
+
+The bio generation uses a carefully designed prompt that ensures consistent, high-quality output.
+
+### Prompt Structure
+
+```
+You are a retail clienteling assistant. Generate a customer bio based on the data provided.
+
+**Tone:** {tone_instructions}
+
+**Customer Data:**
+```json
+{aggregated_customer_data}
+```
+
+**Output Format:**
+Write a bio with the following sections:
+
+1. **Opening** (1 sentence): Customer name, tenure, and loyalty status.
+
+2. **Style Profile** (2-3 sentences): Their style preferences, favorite categories, colors, brands. Include sizes if known. Mention any dislikes to avoid.
+
+3. **Shopping Patterns** (1-2 sentences): How often they shop, average spend, preferred channel/store.
+
+4. **Key Notes** (bullet points): Important personal details from staff notes. Only include if notes exist.
+
+5. **Recent Activity** (1-2 sentences): What they've been browsing, wishlisted, or recently purchased.
+
+6. **Conversation Starters** (2-3 bullet points): Specific, actionable suggestions for engaging this customer based on their recent activity, wishlist, or purchase history.
+
+**Rules:**
+- Only use information provided in the data. Do not invent details.
+- If data is missing for a section, skip that section.
+- Keep it concise - the entire bio should be readable in 30 seconds.
+- For conversation starters, be specific (mention actual products or dates).
+```
+
+### Tone Instructions
+
+The prompt supports three tone options, configured per retailer:
+
+| Tone | Instructions | Use Case |
+|------|--------------|----------|
+| **professional** | "Use a professional, business-appropriate tone. Refer to the customer formally." | Corporate retail, B2B |
+| **friendly** | "Use a warm, friendly tone. Be personable and casual." | Casual retail, lifestyle brands |
+| **luxury** | "Use an elegant, refined tone befitting a luxury retail experience." | High-end fashion, luxury goods |
+
+### Guardrails
+
+The prompt includes explicit guardrails to prevent hallucination:
+
+1. **"Only use information provided in the data"** - Prevents inventing facts
+2. **"Do not invent details"** - Reinforces data-only constraint
+3. **"If data is missing for a section, skip that section"** - Handles incomplete data gracefully
+
+### Conversation Starters Extraction
+
+The response parser extracts conversation starters by:
+1. Finding the "Conversation Starters" section header
+2. Parsing bullet points (supports `-`, `•`, `*` formats)
+3. Filtering out empty or very short items (≤5 chars)
+4. Limiting to 3 starters maximum
+
+### Configuration
+
+| Setting | Default | Environment Variable |
+|---------|---------|---------------------|
+| Model | claude-sonnet-4-20250514 | `ANTHROPIC_MODEL` |
+| Max Tokens | 1024 | `ANTHROPIC_MAX_TOKENS` |
+| Timeout | 30 seconds | `ANTHROPIC_TIMEOUT` |
+
+### Error Handling
+
+The generator handles these error cases:
+
+| Error | HTTP Status | Behavior |
+|-------|-------------|----------|
+| Rate limit | 503 | Returns `Retry-After` header |
+| Auth failure | 502 | Invalid API key |
+| Timeout | 502 | Request exceeded timeout |
+| Connection error | 502 | Network failure |
+| Parse error | 502 | Response too short or malformed |
+
+---
+
 ## API Design
 
 ### Generate Bio

@@ -40,6 +40,125 @@ class TestBioGeneratorInit:
             assert generator.max_tokens == 2048
 
 
+class TestPromptBuilding:
+    """Tests for prompt template with different tones."""
+
+    def test_professional_tone(self):
+        """Professional tone includes formal language instruction."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {"name": "Test"}},
+            tone="professional",
+            include_starters=True,
+        )
+
+        assert "professional, business-appropriate tone" in prompt
+        assert "Refer to the customer formally" in prompt
+
+    def test_friendly_tone(self):
+        """Friendly tone includes warm, casual instruction."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {"name": "Test"}},
+            tone="friendly",
+            include_starters=True,
+        )
+
+        assert "warm, friendly tone" in prompt
+        assert "personable and casual" in prompt
+
+    def test_luxury_tone(self):
+        """Luxury tone includes elegant, refined instruction."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {"name": "Test"}},
+            tone="luxury",
+            include_starters=True,
+        )
+
+        assert "elegant, refined tone" in prompt
+        assert "luxury retail experience" in prompt
+
+    def test_unknown_tone_defaults_to_professional(self):
+        """Unknown tone falls back to professional."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {"name": "Test"}},
+            tone="unknown_tone",
+            include_starters=True,
+        )
+
+        assert "professional, business-appropriate tone" in prompt
+
+    def test_prompt_includes_json_data(self):
+        """Prompt includes customer data as JSON."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        customer_data = {
+            "customer": {"name": "Sarah Chen", "vip_status": "VIP"},
+            "purchase_summary": {"total_orders": 34},
+        }
+
+        prompt = generator._build_prompt(
+            data=customer_data,
+            tone="professional",
+            include_starters=True,
+        )
+
+        assert '"name": "Sarah Chen"' in prompt
+        assert '"vip_status": "VIP"' in prompt
+        assert '"total_orders": 34' in prompt
+
+    def test_prompt_includes_guardrails(self):
+        """Prompt includes data-only guardrails."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {}},
+            tone="professional",
+            include_starters=True,
+        )
+
+        assert "Only use information provided in the data" in prompt
+        assert "Do not invent details" in prompt
+
+    def test_prompt_includes_output_format(self):
+        """Prompt includes all required output sections."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {}},
+            tone="professional",
+            include_starters=True,
+        )
+
+        assert "**Opening**" in prompt
+        assert "**Style Profile**" in prompt
+        assert "**Shopping Patterns**" in prompt
+        assert "**Key Notes**" in prompt
+        assert "**Recent Activity**" in prompt
+        assert "**Conversation Starters**" in prompt
+
+    def test_prompt_without_conversation_starters(self):
+        """Prompt excludes conversation starters when disabled."""
+        generator = BioGenerator.__new__(BioGenerator)
+
+        prompt = generator._build_prompt(
+            data={"customer": {}},
+            tone="professional",
+            include_starters=False,
+        )
+
+        assert "**Conversation Starters**" not in prompt
+        # Other sections still present
+        assert "**Opening**" in prompt
+        assert "**Style Profile**" in prompt
+
+
 class TestResponseParser:
     """Tests for parsing Claude's response."""
 
