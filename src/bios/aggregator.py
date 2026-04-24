@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Callable
 
 import clickhouse_connect
+
+logger = logging.getLogger(__name__)
 
 
 class BioDataAggregator:
@@ -25,51 +28,64 @@ class BioDataAggregator:
         """
         Aggregate all customer data in parallel.
         Returns structured dict ready for prompt injection.
+
+        Handles partial failures gracefully - if a query fails,
+        that section returns empty/default data and aggregation continues.
         """
         loop = asyncio.get_event_loop()
 
-        # Run all queries in parallel
-        results = await asyncio.gather(
-            loop.run_in_executor(
-                self.executor, self._fetch_customer_profile, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_preferences, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_purchase_summary, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_top_purchased, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_recent_purchases, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_wishlist, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_browsing, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_customer_messages, tenant_id, customer_ref
-            ),
-            loop.run_in_executor(
-                self.executor, self._fetch_staff_notes, tenant_id, customer_ref
-            ),
-        )
+        # Define queries with their result keys and default values
+        queries = [
+            ("customer", self._fetch_customer_profile, {}),
+            ("preferences", self._fetch_preferences, {"likes": {}, "dislikes": {}, "sizes": {}}),
+            ("purchase_summary", self._fetch_purchase_summary, {}),
+            ("top_purchased", self._fetch_top_purchased, {"categories": [], "brands": [], "colors": []}),
+            ("recent_purchases", self._fetch_recent_purchases, []),
+            ("wishlist", self._fetch_wishlist, {"count": 0, "items": []}),
+            ("recent_browsing", self._fetch_browsing, {"categories": [], "brands": []}),
+            ("customer_messages", self._fetch_customer_messages, []),
+            ("staff_notes", self._fetch_staff_notes, []),
+        ]
 
-        return {
-            "customer": results[0],
-            "preferences": results[1],
-            "purchase_summary": results[2],
-            "top_purchased": results[3],
-            "recent_purchases": results[4],
-            "wishlist": results[5],
-            "recent_browsing": results[6],
-            "customer_messages": results[7],
-            "staff_notes": results[8],
-        }
+        # Run all queries in parallel with error handling
+        tasks = [
+            loop.run_in_executor(
+                self.executor,
+                self._safe_fetch,
+                key,
+                fetch_func,
+                default,
+                tenant_id,
+                customer_ref,
+            )
+            for key, fetch_func, default in queries
+        ]
+
+        results = await asyncio.gather(*tasks)
+
+        # Combine results into dict
+        return {key: value for key, value in results}
+
+    def _safe_fetch(
+        self,
+        key: str,
+        fetch_func: Callable,
+        default: Any,
+        tenant_id: str,
+        customer_ref: str,
+    ) -> tuple[str, Any]:
+        """
+        Execute a fetch function with error handling.
+        Returns (key, result) tuple. On failure, returns (key, default).
+        """
+        try:
+            result = fetch_func(tenant_id, customer_ref)
+            return (key, result)
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch {key} for {tenant_id}/{customer_ref}: {e}"
+            )
+            return (key, default)
 
     def _fetch_customer_profile(self, tenant_id: str, customer_ref: str) -> dict:
         result = self.client.query(
@@ -315,9 +331,19 @@ class BioDataAggregator:
         )
 
         return [
-            {"message": row[0], "date": row[1].strftime("%Y-%m-%d"), "store": row[2]}
+            {
+                "message": self._truncate_message(row[0]),
+                "date": row[1].strftime("%Y-%m-%d"),
+                "store": row[2],
+            }
             for row in result.result_rows
         ]
+
+    def _truncate_message(self, message: str, max_length: int = 500) -> str:
+        """Truncate message to max_length, adding ellipsis if truncated."""
+        if not message or len(message) <= max_length:
+            return message
+        return message[:max_length - 3] + "..."
 
     def _fetch_staff_notes(self, tenant_id: str, customer_ref: str) -> list:
         # Placeholder - implement when TWCNOTES table is added
