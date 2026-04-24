@@ -7,7 +7,12 @@ from typing import Optional
 
 from .aggregator import BioDataAggregator
 from .generator import BioGenerator
-from .repositories import BioCacheRepository, RetailerSettingsRepository
+from .repositories import (
+    BioCacheRepository,
+    RetailerSettingsRepository,
+    AuditLogRepository,
+    AuditAction,
+)
 
 
 class BioService:
@@ -19,15 +24,55 @@ class BioService:
         generator: BioGenerator,
         cache: BioCacheRepository,
         settings: RetailerSettingsRepository,
+        audit_log: Optional[AuditLogRepository] = None,
     ):
         self.aggregator = aggregator
         self.generator = generator
         self.cache = cache
         self.settings = settings
+        self.audit_log = audit_log
 
-    async def get_bio(self, tenant_id: str, customer_ref: str) -> Optional[dict]:
+    async def _log_audit(
+        self,
+        tenant_id: str,
+        customer_ref: str,
+        action: str,
+        user_id: str,
+        details: Optional[dict] = None,
+    ) -> None:
+        """Log an audit event if audit logging is enabled."""
+        if self.audit_log:
+            try:
+                await self.audit_log.log(
+                    tenant_id=tenant_id,
+                    customer_ref=customer_ref,
+                    action=action,
+                    user_id=user_id,
+                    details=details,
+                )
+            except Exception:
+                # Don't fail the main operation if audit logging fails
+                pass
+
+    async def get_bio(
+        self,
+        tenant_id: str,
+        customer_ref: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[dict]:
         """Get cached bio if exists."""
-        return await self.cache.get(tenant_id, customer_ref)
+        bio = await self.cache.get(tenant_id, customer_ref)
+
+        # Log view action if user_id provided
+        if bio and user_id:
+            await self._log_audit(
+                tenant_id=tenant_id,
+                customer_ref=customer_ref,
+                action=AuditAction.VIEW,
+                user_id=user_id,
+            )
+
+        return bio
 
     async def generate_bio(
         self, tenant_id: str, customer_ref: str, user_id: str
@@ -84,6 +129,19 @@ class BioService:
 
         await self.cache.save(bio_record)
 
+        # Audit log
+        await self._log_audit(
+            tenant_id=tenant_id,
+            customer_ref=customer_ref,
+            action=AuditAction.GENERATE,
+            user_id=user_id,
+            details={
+                "bio_length": len(result["bio"]),
+                "conversation_starters_count": len(result["conversation_starters"]),
+                "tone": retailer_settings.get("tone", "professional"),
+            },
+        )
+
         return bio_record
 
     async def update_bio(
@@ -102,13 +160,32 @@ class BioService:
         }
 
         await self.cache.save(bio_record)
+
+        # Audit log
+        await self._log_audit(
+            tenant_id=tenant_id,
+            customer_ref=customer_ref,
+            action=AuditAction.EDIT,
+            user_id=user_id,
+            details={"bio_length": len(bio_text)},
+        )
+
         return bio_record
 
     async def reset_to_ai(
         self, tenant_id: str, customer_ref: str, user_id: str
     ) -> dict:
         """Clear staff edits and regenerate AI bio."""
+        # Audit log the reset action
+        await self._log_audit(
+            tenant_id=tenant_id,
+            customer_ref=customer_ref,
+            action=AuditAction.RESET,
+            user_id=user_id,
+        )
+
         await self.cache.delete(tenant_id, customer_ref)
+        # generate_bio will log its own GENERATE action
         return await self.generate_bio(tenant_id, customer_ref, user_id)
 
     async def check_staleness(self, tenant_id: str, customer_ref: str) -> dict:

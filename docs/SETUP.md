@@ -38,7 +38,7 @@ The AI Bios service generates AI-powered customer biographies for retail staff. 
 
 ### 2. DynamoDB Tables
 
-Create two DynamoDB tables:
+Create three DynamoDB tables:
 
 **Table 1: `twc-customer-bios`**
 ```
@@ -49,6 +49,12 @@ Sort Key: customer_ref (String)
 **Table 2: `twc-retailer-settings`**
 ```
 Partition Key: tenant_id (String)
+```
+
+**Table 3: `twc-bio-audit-log`**
+```
+Partition Key: tenant_id (String)
+Sort Key: sort_key (String)  # Format: "{customer_ref}#{timestamp}#{uuid}"
 ```
 
 AWS CLI commands:
@@ -72,6 +78,18 @@ aws dynamodb create-table \
     AttributeName=tenant_id,AttributeType=S \
   --key-schema \
     AttributeName=tenant_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region ap-southeast-2
+
+# Audit log table
+aws dynamodb create-table \
+  --table-name twc-bio-audit-log \
+  --attribute-definitions \
+    AttributeName=tenant_id,AttributeType=S \
+    AttributeName=sort_key,AttributeType=S \
+  --key-schema \
+    AttributeName=tenant_id,KeyType=HASH \
+    AttributeName=sort_key,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST \
   --region ap-southeast-2
 ```
@@ -107,6 +125,7 @@ Obtain an API key from [Anthropic Console](https://console.anthropic.com/).
 | `AWS_REGION` | No | ap-southeast-2 | AWS region |
 | `BIO_CACHE_TABLE` | No | twc-customer-bios | DynamoDB cache table |
 | `RETAILER_SETTINGS_TABLE` | No | twc-retailer-settings | DynamoDB settings table |
+| `AUDIT_LOG_TABLE` | No | twc-bio-audit-log | DynamoDB audit log table |
 
 ---
 

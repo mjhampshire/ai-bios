@@ -8,7 +8,11 @@ from pydantic import BaseModel
 from .aggregator import BioDataAggregator
 from .config import get_clickhouse_config, get_dynamodb_config, get_anthropic_config
 from .generator import BioGenerator
-from .repositories import DynamoBioCacheRepository, DynamoRetailerSettingsRepository
+from .repositories import (
+    DynamoBioCacheRepository,
+    DynamoRetailerSettingsRepository,
+    DynamoAuditLogRepository,
+)
 from .service import BioService
 
 router = APIRouter(prefix="/api/v1/customers/{customer_ref}/bio", tags=["bios"])
@@ -63,12 +67,17 @@ def _get_bio_service_instance() -> BioService:
             table_name=dynamo_config.retailer_settings_table,
             region=dynamo_config.region,
         )
+        audit_log = DynamoAuditLogRepository(
+            table_name=dynamo_config.audit_log_table,
+            region=dynamo_config.region,
+        )
 
         _bio_service = BioService(
             aggregator=aggregator,
             generator=generator,
             cache=cache,
             settings=settings,
+            audit_log=audit_log,
         )
     return _bio_service
 
@@ -97,10 +106,11 @@ async def get_bio_service() -> BioService:
 async def get_bio(
     customer_ref: str,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_current_user_id),
     bio_service: BioService = Depends(get_bio_service),
 ):
     """Get current bio for customer."""
-    bio = await bio_service.get_bio(tenant_id, customer_ref)
+    bio = await bio_service.get_bio(tenant_id, customer_ref, user_id=user_id)
     if not bio:
         return BioResponse(exists=False)
     return BioResponse(exists=True, **bio)

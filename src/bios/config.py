@@ -40,6 +40,7 @@ class DynamoDBConfig:
     region: str
     bio_cache_table: str
     retailer_settings_table: str
+    audit_log_table: str
 
     @classmethod
     def from_env(cls) -> "DynamoDBConfig":
@@ -47,6 +48,7 @@ class DynamoDBConfig:
             region=os.getenv("AWS_REGION", "ap-southeast-2"),
             bio_cache_table=os.getenv("BIO_CACHE_TABLE", "twc-customer-bios"),
             retailer_settings_table=os.getenv("RETAILER_SETTINGS_TABLE", "twc-retailer-settings"),
+            audit_log_table=os.getenv("AUDIT_LOG_TABLE", "twc-bio-audit-log"),
         )
 
 
