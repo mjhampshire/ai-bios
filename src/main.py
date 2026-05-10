@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from bios.api import router as bio_router
+from bios.api import router as bio_router, settings_router
 
 app = FastAPI(
     title="TWC AI Bios",
@@ -41,6 +41,7 @@ async def root():
 
 # Include routers
 app.include_router(bio_router)
+app.include_router(settings_router)
 
 
 if __name__ == "__main__":

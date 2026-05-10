@@ -16,6 +16,7 @@ from .repositories import (
 from .service import BioService
 
 router = APIRouter(prefix="/api/v1/customers/{customer_ref}/bio", tags=["bios"])
+settings_router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 
 # Request/Response models
@@ -43,6 +44,24 @@ class StalenessResponse(BaseModel):
     exists: bool
     is_stale: bool
     reason: str | None = None
+
+
+class BioSettingsRequest(BaseModel):
+    """Request to update bio generation settings."""
+    tone: str | None = None  # "professional", "friendly", "luxury"
+    include_spend_data: bool | None = None
+    include_conversation_starters: bool | None = None
+    max_notes_to_include: int | None = None
+    language: str | None = None
+
+
+class BioSettingsResponse(BaseModel):
+    """Bio generation settings for a retailer."""
+    tone: str
+    include_spend_data: bool
+    include_conversation_starters: bool
+    max_notes_to_include: int
+    language: str
 
 
 # Singleton instances (lazy initialized)
@@ -188,3 +207,66 @@ async def check_staleness(
     """Check if cached bio is stale."""
     result = await bio_service.check_staleness(tenant_id, customer_ref)
     return StalenessResponse(**result)
+
+
+# --- Settings endpoints ---
+
+_settings_repo: Optional[DynamoRetailerSettingsRepository] = None
+
+
+def _get_settings_repo() -> DynamoRetailerSettingsRepository:
+    """Get or create singleton settings repository."""
+    global _settings_repo
+    if _settings_repo is None:
+        dynamo_config = get_dynamodb_config()
+        _settings_repo = DynamoRetailerSettingsRepository(
+            table_name=dynamo_config.retailer_settings_table,
+            region=dynamo_config.region,
+        )
+    return _settings_repo
+
+
+async def get_settings_repo() -> DynamoRetailerSettingsRepository:
+    """Dependency for settings repository."""
+    return _get_settings_repo()
+
+
+@settings_router.get("/bio", response_model=BioSettingsResponse)
+async def get_bio_settings(
+    tenant_id: str = Depends(get_tenant_id),
+    settings_repo: DynamoRetailerSettingsRepository = Depends(get_settings_repo),
+):
+    """Get bio generation settings for the retailer."""
+    settings = await settings_repo.get_bio_settings(tenant_id)
+    return BioSettingsResponse(**settings)
+
+
+@settings_router.put("/bio", response_model=BioSettingsResponse)
+async def update_bio_settings(
+    request: BioSettingsRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    settings_repo: DynamoRetailerSettingsRepository = Depends(get_settings_repo),
+):
+    """Update bio generation settings for the retailer.
+
+    Only provided fields are updated; others are preserved.
+
+    Valid tones: "professional", "friendly", "luxury"
+    """
+    # Filter out None values
+    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+
+    if not updates:
+        # No changes, return current settings
+        settings = await settings_repo.get_bio_settings(tenant_id)
+        return BioSettingsResponse(**settings)
+
+    # Validate tone if provided
+    if "tone" in updates and updates["tone"] not in ["professional", "friendly", "luxury"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid tone '{updates['tone']}'. Must be: professional, friendly, or luxury"
+        )
+
+    settings = await settings_repo.save_bio_settings(tenant_id, updates)
+    return BioSettingsResponse(**settings)

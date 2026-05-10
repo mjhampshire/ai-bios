@@ -35,6 +35,11 @@ class RetailerSettingsRepository(ABC):
         """Get bio generation settings for a tenant."""
         pass
 
+    @abstractmethod
+    async def save_bio_settings(self, tenant_id: str, settings: dict) -> dict:
+        """Save bio generation settings for a tenant. Returns merged settings."""
+        pass
+
 
 class DynamoBioCacheRepository(BioCacheRepository):
     """DynamoDB implementation of bio cache."""
@@ -80,6 +85,30 @@ class DynamoRetailerSettingsRepository(RetailerSettingsRepository):
 
         # Merge with defaults
         return {**self.DEFAULT_SETTINGS, **settings}
+
+    async def save_bio_settings(self, tenant_id: str, settings: dict) -> dict:
+        """Save bio settings. Only updates provided fields, preserves others."""
+        # Get existing settings
+        existing = await self.get_bio_settings(tenant_id)
+
+        # Merge new settings with existing (new values override)
+        merged = {**existing, **settings}
+
+        # Validate tone if provided
+        valid_tones = ["professional", "friendly", "luxury"]
+        if merged.get("tone") not in valid_tones:
+            merged["tone"] = "professional"
+
+        # Save to DynamoDB
+        self.table.put_item(
+            Item={
+                "tenant_id": tenant_id,
+                "bio_settings": merged,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        )
+
+        return merged
 
 
 class AuditAction:
