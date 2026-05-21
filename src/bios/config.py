@@ -47,7 +47,7 @@ class DynamoDBConfig:
         return cls(
             region=os.getenv("AWS_REGION", "ap-southeast-2"),
             bio_cache_table=os.getenv("BIO_CACHE_TABLE", "twc-customer-bios"),
-            retailer_settings_table=os.getenv("RETAILER_SETTINGS_TABLE", "twc-retailer-settings"),
+            retailer_settings_table=os.getenv("RETAILER_SETTINGS_TABLE", "twc-retailer-bio-settings"),
             audit_log_table=os.getenv("AUDIT_LOG_TABLE", "twc-bio-audit-log"),
         )
 

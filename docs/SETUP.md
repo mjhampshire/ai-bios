@@ -46,7 +46,7 @@ Partition Key: tenant_id (String)
 Sort Key: customer_ref (String)
 ```
 
-**Table 2: `twc-retailer-settings`**
+**Table 2: `twc-retailer-bio-settings`**
 ```
 Partition Key: tenant_id (String)
 ```
@@ -73,7 +73,7 @@ aws dynamodb create-table \
 
 # Retailer settings table
 aws dynamodb create-table \
-  --table-name twc-retailer-settings \
+  --table-name twc-retailer-bio-settings \
   --attribute-definitions \
     AttributeName=tenant_id,AttributeType=S \
   --key-schema \
@@ -127,7 +127,7 @@ Obtain an API key from [Anthropic Console](https://console.anthropic.com/).
 | `CLICKHOUSE_DATABASE` | No | default | ClickHouse database |
 | `AWS_REGION` | No | ap-southeast-2 | AWS region |
 | `BIO_CACHE_TABLE` | No | twc-customer-bios | DynamoDB cache table |
-| `RETAILER_SETTINGS_TABLE` | No | twc-retailer-settings | DynamoDB settings table |
+| `RETAILER_SETTINGS_TABLE` | No | twc-retailer-bio-settings | DynamoDB settings table |
 | `AUDIT_LOG_TABLE` | No | twc-bio-audit-log | DynamoDB audit log table |
 
 ---
@@ -336,7 +336,7 @@ curl -X POST \
 
 ## Retailer Settings
 
-Each retailer can customize bio generation via the `twc-retailer-settings` DynamoDB table.
+Each retailer can customize bio generation via the `twc-retailer-bio-settings` DynamoDB table.
 
 **Example settings record:**
 ```json
@@ -360,7 +360,7 @@ Each retailer can customize bio generation via the `twc-retailer-settings` Dynam
 To insert settings:
 ```bash
 aws dynamodb put-item \
-  --table-name twc-retailer-settings \
+  --table-name twc-retailer-bio-settings \
   --item '{
     "tenant_id": {"S": "viktoria-woods"},
     "bio_settings": {"M": {
