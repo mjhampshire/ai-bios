@@ -33,6 +33,30 @@ kubectl -n ai-bios get pods
 kubectl -n ai-bios logs -f deployment/twc-ai-bios
 ```
 
+## Internal Access
+
+This service is internal-only (no public ingress). Other services in the cluster
+access it via Kubernetes DNS:
+
+```
+http://twc-ai-bios.ai-bios.svc.cluster.local/api/v1/customers/{customer_ref}/bio
+```
+
+**Example endpoints:**
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `.../api/v1/customers/{customer_ref}/bio` | Get cached bio |
+| `POST` | `.../api/v1/customers/{customer_ref}/bio/generate` | Generate new bio |
+| `PUT` | `.../api/v1/customers/{customer_ref}/bio` | Staff edit bio |
+| `POST` | `.../api/v1/customers/{customer_ref}/bio/reset` | Reset to AI-generated |
+| `GET` | `.../api/v1/settings/bio` | Get retailer settings |
+| `PUT` | `.../api/v1/settings/bio` | Update retailer settings |
+| `GET` | `.../health` | Health check |
+
+**Required headers** (injected by FE proxy from authenticated user context):
+- `X-Tenant-ID`: Retailer identifier
+- `X-User-ID`: Staff user identifier
+
 ## Local Testing
 
 Run locally with Docker:
